@@ -1,7 +1,7 @@
 # Differentiable Large-Strain Continuum Mechanics
 ## Algorithmic Extensions of Small-Strain FEM using JAX and DOLFINx
 
-> Implementing and comparing two stress update algorithms for large-strain solid mechanics, with automatic differentiation via JAX for consistent algorithmic tangents, built on top of DOLFINx.
+> Implementing a stress update algorithm for large-strain solid mechanics, with automatic differentiation via JAX for consistent algorithmic tangents, built on top of DOLFINx.
 
 ---
 
