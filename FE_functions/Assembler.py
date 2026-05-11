@@ -11,8 +11,8 @@ import jax.numpy as jnp
 from jax import jacfwd
 from functools import partial
 import matplotlib.pyplot as plt
-from FE_functions.ElasticModulus import compute_elastic_tangent_jax
-from FE_functions.BMatrix import compute_B_matrix
+from LargeStrains.ElasticModulus import compute_elastic_tangent_jax
+from LargeStrains.BMatrix import compute_B_matrix
 jax.config.update("jax_enable_x64", True)
 
 

@@ -1,24 +1,28 @@
 # ═══════════════════════════════════════════════════════════════════════════
 #  RadialReturn — faithful to Rodriguez-Ferran & Huerta (1996), Algorithm 1
-#                 + Simo-Hughes-correct radial return for ALL hardening laws
 #
 #  Reference:
 #    Rodriguez-Ferran A. & Huerta A. (1996),
 #    "Comparing Two Algorithms to Add Large Strains to a Small Strain
 #     Finite Element Code", CIMNE Publication 91.
-#    Simo J.C. & Hughes T.J.R. (1998), "Computational Inelasticity", Box 3.2
 #
 #  Algorithm 1 (paper's Box 2a) for `strain='large1'`:
+#
+#    Step 2:  Δε = ½ (∂Δu/∂ⁿx + ∂Δu/∂ⁿxᵀ + ∂Δu/∂ⁿxᵀ · ∂Δu/∂ⁿx)
+#                  ── full Lagrange strain in Ω_n, INCLUDING quadratic term
+#             [computed UPSTREAM in HistoryUpd_SS, passed in as delta_eps_v]
+#
+#    Step 3:  Δσ_trial = C : Δε                                 (in Ω_n)
+#
 #    Step 4:  σ_trial = J_Λ⁻¹ Λ σ_n Λᵀ + J_Λ⁻¹ Λ Δσ_trial Λᵀ    (Eq. 19)
-#    where  Λ = F_{n+1} · F_n⁻¹    (incremental deformation gradient)
+#                       └── push σ_n ──┘   └── push Δσ_trial ──┘
+#             where  Λ = F_{n+1} · F_n⁻¹     (incremental def. gradient,
+#                                              maps Ω_n → Ω_{n+1})
+#                    J_Λ = det(Λ)
 #
-#  Radial return (Simo-Hughes Box 3.2 convention):
-#    Δγ is the consistency parameter, also equal to Δε_p_eq directly.
-#    s_new = s_trial · (1 − 3G·Δγ / σ_eq_trial)
-#    σ_eq_new = σ_eq_trial − 3G·Δγ
-#    Y_new    = Y_n + h·Δγ          (linear isotropic)
+#    Step 5:  Standard radial return on σ_trial
 #
-#  CONSISTENCY VERIFIED: σ_eq_new = Y_new exactly at the end of return mapping.
+#  This is incrementally objective AND first-order accurate (paper Sec. 4).
 # ═══════════════════════════════════════════════════════════════════════════
 
 from dolfinx import mesh, fem
@@ -43,12 +47,20 @@ from LargeStrains.TensorsStr import strain_to_voigt, stress_to_voigt, voigt_to_s
 def radial_return_jax(delta_eps_v, sigma_n_v, eps_p_n, Y_n,
                       E, nu, h, Y_init, Y_inf, delta,
                       alpha_n_v=None,
-                      F_n=None, J_n=None,
-                      Lambda=None, J_Lambda=None,
+                      F_n=None, J_n=None,            # kept for backwards compat
+                      Lambda=None, J_Lambda=None,    # paper's Λ and J_Λ
                       strain='small',
                       hardening='linear_isotropic'):
     """
-    delta_eps_v : 6-Voigt strain INCREMENT (engineering shears for off-diagonals)
+    delta_eps_v : 6-Voigt strain INCREMENT
+                  - 'small'  : sym(∂Δu/∂X)
+                  - 'large1' : full Lagrange Δ𝐄 in Ω_n (incl. quadratic term),
+                               built UPSTREAM in HistoryUpd_SS using
+                                 ∂Δu/∂(ⁿx) = Λ − I
+    sigma_n_v   : Cauchy stress at start of step (Voigt) — referred to Ω_n.
+                  Push-forward to Ω_{n+1} happens HERE for 'large1'.
+    Lambda      : incremental def. gradient F_{n+1}·F_n⁻¹  (3x3 JAX array)
+    J_Lambda    : det(Lambda)
     """
     G   = E / (2.0 * (1.0 + nu))
     K   = E / (3.0 * (1.0 - 2.0 * nu))
@@ -57,8 +69,6 @@ def radial_return_jax(delta_eps_v, sigma_n_v, eps_p_n, Y_n,
     alpha_n_v = jnp.zeros(6) if alpha_n_v is None else alpha_n_v
 
     # ── Build elastic incremental stress in Ω_n: Δσ = C : Δε ───────────────
-    # Note shear rows use G (not 2G) because delta_eps_v[3:6] are engineering
-    # shears (= 2 · tensorial), and Voigt elastic matrix has G on shear diag.
     delta_sigma_v = jnp.zeros(6)
     delta_sigma_v = delta_sigma_v.at[0].set((lam + 2*G)*delta_eps_v[0]
                                             + lam*(delta_eps_v[1] + delta_eps_v[2]))
@@ -75,13 +85,17 @@ def radial_return_jax(delta_eps_v, sigma_n_v, eps_p_n, Y_n,
         sigma_trial_v = sigma_n_v + delta_sigma_v
 
     elif strain == 'large1':
-        # Paper's Eq. (19): push σ_n + Δσ forward by Λ
-        sigma_n_mat     = voigt_to_stress(sigma_n_v)
-        delta_sigma_mat = voigt_to_stress(delta_sigma_v)
+        # ─── Paper's Eq. (19), Box 2a ──────────────────────────────────────
+        #     σ_trial = J_Λ⁻¹ · Λ · σ_n         · Λᵀ
+        #             + J_Λ⁻¹ · Λ · Δσ_trial    · Λᵀ
+        #     where  Λ = F_{n+1}·F_n⁻¹  (incremental, NOT F_n)
+        # ───────────────────────────────────────────────────────────────────
+        sigma_n_mat     = voigt_to_stress(sigma_n_v)        # 3x3
+        delta_sigma_mat = voigt_to_stress(delta_sigma_v)    # 3x3
         pushed = (1.0 / J_Lambda) * Lambda @ (sigma_n_mat + delta_sigma_mat) @ Lambda.T
         sigma_trial_v = stress_to_voigt(pushed)
 
-    # ── Yield check & return mapping ───────────────────────────────────────
+    # ── Yield check & return mapping (unchanged) ───────────────────────────
     p_trial   = (sigma_trial_v[0] + sigma_trial_v[1] + sigma_trial_v[2]) / 3.0
     s_trial_v = sigma_trial_v.at[0].add(-p_trial).at[1].add(-p_trial).at[2].add(-p_trial)
 
@@ -96,70 +110,55 @@ def radial_return_jax(delta_eps_v, sigma_n_v, eps_p_n, Y_n,
         return sigma_trial_v, eps_p_n, Y_n, alpha_n_v
 
     def plastic_return(_):
-
-        # ─── Linear isotropic hardening (Simo-Hughes Box 3.2) ──────────────
         if hardening == 'linear_isotropic':
-            # In Simo-Hughes convention, Δγ IS the equivalent plastic strain
-            # increment (no √(2/3) factor). Consistency: σ_eq_new = Y_new.
             dgamma      = f_trial / (3.0*G + h)
-            # Radial return: scale s by (1 − 3G·Δγ/σ_eq_trial). Equivalent to
-            # subtracting 2G·Δγ·n where n = (3/2)·s/σ_eq_trial in Simo's
-            # normalisation.
-            factor      = 1.0 - 3.0*G*dgamma / seq_trial
-            s_new_v     = s_trial_v * factor
+            n_dir_v     = s_trial_v / seq_trial
+            s_new_v     = s_trial_v - 2.0*G*dgamma*n_dir_v
             sigma_new_v = s_new_v.at[0].add(p_trial).at[1].add(p_trial).at[2].add(p_trial)
-            eps_p_new   = eps_p_n + dgamma
-            Y_new       = Y_n + h * dgamma
+            eps_p_new   = eps_p_n + jnp.sqrt(2.0/3.0) * dgamma
+            Y_new       = Y_n + h * jnp.sqrt(2.0/3.0) * dgamma
             return sigma_new_v, eps_p_new, Y_new, alpha_n_v
 
-        # ─── Nonlinear isotropic hardening (Voce) ──────────────────────────
         elif hardening == 'nonlinear_isotropic':
             def Y_voce(ep):
                 return Y_init + (Y_inf - Y_init) * (1.0 - jnp.exp(-delta * ep))
             def dY_voce(ep):
                 return (Y_inf - Y_init) * delta * jnp.exp(-delta * ep)
 
-            # Newton-Raphson to find Δγ such that σ_eq_trial − 3G·Δγ = Y(ε_p+Δγ)
             def newton_step(_, dgamma):
-                ep_new = eps_p_n + dgamma
+                ep_new = eps_p_n + jnp.sqrt(2.0/3.0) * dgamma
                 f      = seq_trial - 3.0*G*dgamma - Y_voce(ep_new)
-                df     = -3.0*G - dY_voce(ep_new)
+                df     = -3.0*G - dY_voce(ep_new) * jnp.sqrt(2.0/3.0)
                 return dgamma - f/df
 
-            dgamma_init = f_trial / (3.0*G + dY_voce(eps_p_n))
+            dgamma_init = f_trial / (3.0*G + dY_voce(eps_p_n) * jnp.sqrt(2.0/3.0))
             dgamma      = jax.lax.fori_loop(0, 50, newton_step, dgamma_init)
 
-            factor      = 1.0 - 3.0*G*dgamma / seq_trial
-            s_new_v     = s_trial_v * factor
+            n_dir_v     = s_trial_v / seq_trial
+            s_new_v     = s_trial_v - 2.0*G*dgamma*n_dir_v
             sigma_new_v = s_new_v.at[0].add(p_trial).at[1].add(p_trial).at[2].add(p_trial)
-            eps_p_new   = eps_p_n + dgamma
+            eps_p_new   = eps_p_n + jnp.sqrt(2.0/3.0) * dgamma
             Y_new       = Y_voce(eps_p_new)
             return sigma_new_v, eps_p_new, Y_new, alpha_n_v
 
-        # ─── Kinematic hardening (Armstrong-Frederick) ─────────────────────
         elif hardening == 'kinematic':
             C_af, gamma_af = h, delta
-            # In Simo convention, A-F consistency is:
-            #   σ_eq_trial − 3G·Δγ − C·Δγ/(1+γ·Δγ) − Y_init = 0
-            # (note: NOT 2/3·C; the geometric factor cancels with Simo's n)
             def newton_step_kin(_, dgamma):
                 denom = 1.0 + gamma_af * dgamma
-                f     = seq_trial - 3.0*G*dgamma - C_af*dgamma/denom - Y_init
-                df    = -3.0*G - C_af/denom**2
+                f     = seq_trial - 3.0*G*dgamma - (2.0/3.0)*C_af*(dgamma/denom) - Y_init
+                df    = -3.0*G - (2.0/3.0)*C_af*(1.0/denom**2)
                 return dgamma - f/df
 
-            dgamma_init = f_trial / (3.0*G + C_af)
+            dgamma_init = f_trial / (3.0*G + (2.0/3.0)*C_af)
             dgamma      = jax.lax.fori_loop(0, 50, newton_step_kin, dgamma_init)
 
             denom       = 1.0 + gamma_af * dgamma
-            # Simo's flow direction: n = (3/2) · η / σ_eq_trial
-            n_v         = (1.5 / seq_trial) * eta_v
-            s_new_v     = s_trial_v - 2.0*G*dgamma*n_v
+            n_dir_v     = eta_v / seq_trial
+            s_new_v     = s_trial_v - 2.0*G*dgamma*n_dir_v
             sigma_new_v = s_new_v.at[0].add(p_trial).at[1].add(p_trial).at[2].add(p_trial)
-            # Backstress evolution (A-F): α_new = (α_n + (2/3)·C·Δγ·n) / (1+γ·Δγ)
-            alpha_new_v = (alpha_n_v + (2.0/3.0)*C_af*dgamma*n_v) / denom
-            eps_p_new   = eps_p_n + dgamma
-            Y_new       = Y_n     # no isotropic component in pure A-F
+            eps_p_new   = eps_p_n + jnp.sqrt(2.0/3.0) * dgamma
+            Y_new       = Y_n
+            alpha_new_v = (alpha_n_v + (2.0/3.0)*C_af*dgamma*n_dir_v) / denom
             return sigma_new_v, eps_p_new, Y_new, alpha_new_v
 
     return jax.lax.cond(f_trial <= 0.0, elastic_return, plastic_return, operand=None)

@@ -13,21 +13,24 @@ from functools import partial
 import matplotlib.pyplot as plt
 jax.config.update("jax_enable_x64", True)
 
-from FE_functions.ElasticModulus import compute_elastic_tangent_jax
-from FE_functions.TensorsStr import strain_to_voigt, stress_to_voigt, voigt_to_stress
-from FE_functions.RadialReturn import radial_return_jax
-from FE_functions.BMatrix import compute_B_matrix
-from FE_functions.Assembler import ConsistentTangentAssembler
-from FE_functions.GradU import compute_grad_u_at_qp
-from FE_functions.Residual import assemble_residual
-from FE_functions.HistoryUpd_SS import update_history_and_tangents
+from LargeStrains.ElasticModulus import compute_elastic_tangent_jax
+from LargeStrains.TensorsStr import strain_to_voigt, stress_to_voigt, voigt_to_stress
+from LargeStrains.RadialReturn_V0 import radial_return_jax
+from LargeStrains.BMatrix import compute_B_matrix
+from LargeStrains.Assembler import ConsistentTangentAssembler
+from LargeStrains.GradU import compute_grad_u_at_qp
+from LargeStrains.Residual import assemble_residual
+from LargeStrains.HistoryUpd_SS import update_history_and_tangents
 
 def Newton_Solver_FullTangent(V, u, u_old, sigma_q, eps_p_q, Y_q, alpha_q, assembler,
                               num_iterations, traction_increment, num_cells, num_qp,
                               basis_grad, qp_weights, right_face_dofs,
-                              bc_dofs, E, nu, Y0, h, Y_init, Y_inf, delta, cumulative_traction, strain='small', hardening = 'linear_isotropic'):
+                              bc_dofs, E, nu, Y0, h, Y_init, Y_inf, delta, cumulative_traction, strain='small', hardening = 'linear_isotropic',
+                              traction_vec_override=None, extra_tractions=None):
 
-    traction_vec = np.array([cumulative_traction, 0, 0.0])
+    #traction_vec = np.array([cumulative_traction, 0, 0.0])
+    traction_vec = traction_vec_override if traction_vec_override is not None \
+               else np.array([cumulative_traction, 0, 0.0])
     print(f"\nNewton (cumulative_traction={cumulative_traction:.1f}):")
 
     # Snapshot the converged state
@@ -56,7 +59,7 @@ def Newton_Solver_FullTangent(V, u, u_old, sigma_q, eps_p_q, Y_q, alpha_q, assem
 
         K = assembler.assemble_stiffness()
         R = assemble_residual(u, sigma_q, traction_vec, V, num_cells, num_qp,
-                              basis_grad, qp_weights, right_face_dofs)
+                              basis_grad, qp_weights, right_face_dofs, extra_tractions=extra_tractions)
 
         for dof in bc_dofs:
             for comp in range(3):
