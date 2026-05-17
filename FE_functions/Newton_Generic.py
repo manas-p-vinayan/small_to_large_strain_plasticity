@@ -1,11 +1,3 @@
-# ═══════════════════════════════════════════════════════════════════════════
-#  Newton_Solver_Generic
-#  Drop-in replacement for Newton_Solver_FullTangent that supports:
-#     • component-wise homogeneous Dirichlet BCs:  list[(dof_array, comp)]
-#     • prescribed (non-zero) Dirichlet values:    list[(dof_array, comp, value)]
-#     • the existing extra_tractions interface
-# ═══════════════════════════════════════════════════════════════════════════
-
 import numpy as np
 from LargeStrains.Residual import assemble_residual
 from LargeStrains.HistoryUpd_SS import update_history_and_tangents
@@ -15,12 +7,12 @@ def Newton_Solver_Generic(
         V, u, u_old, sigma_q, eps_p_q, Y_q, alpha_q, assembler,
         num_iterations, num_cells, num_qp,
         basis_grad, qp_weights, primary_face_dofs,
-        bc_per_component,                # list[(dof_array, component)]
+        bc_per_component,            
         E, nu, Y0, h, Y_init, Y_inf, delta,
         cumulative_traction,
         traction_vec_override=None,
         extra_tractions=None,
-        prescribed_values=None,          # list[(dof_array, component, value)]
+        prescribed_values=None,         
         strain='small', hardening='linear_isotropic',
         tol=1e-8):
     """
@@ -112,12 +104,12 @@ def Newton_Solver_Generic(
         print(f"   iter {k:2d}:  |du|={du_norm:.3e}   rel={rel_du:.3e}")
 
         if rel_du < tol and k > 0:
-            print(f"   ✓ converged in {k+1} iterations")
+            print(f" Converged in {k+1} iterations")
             converged = True
             break
 
     if not converged:
-        print(f"   ⚠ Newton did NOT converge after {num_iterations} iterations")
+        print(f" Newton did NOT converge after {num_iterations} iterations")
 
     # ── Final history advance: restore, then update u_old to converged u ──
     sigma_q.x.array[:] = sigma_converged
@@ -135,11 +127,11 @@ def Newton_Solver_Generic(
 
     # ── ELASTIC / PLASTIC status report ─────────────────────────────────────
     eps_p_final     = eps_p_q.x.array
-    delta_eps_p     = eps_p_final - eps_p_step_start          # this-step increment
+    delta_eps_p     = eps_p_final - eps_p_step_start        
     plastic_thresh  = 1e-12
 
-    n_plastic_now   = int(np.sum(delta_eps_p > plastic_thresh))   # QPs that yielded this step
-    n_plastic_total = int(np.sum(eps_p_final  > plastic_thresh))  # QPs ever plastic
+    n_plastic_now   = int(np.sum(delta_eps_p > plastic_thresh))   
+    n_plastic_total = int(np.sum(eps_p_final  > plastic_thresh))  
     n_qp_total      = eps_p_final.size
 
     if n_plastic_now == 0:

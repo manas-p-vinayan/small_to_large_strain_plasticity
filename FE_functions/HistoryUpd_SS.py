@@ -1,15 +1,3 @@
-# ═══════════════════════════════════════════════════════════════════════════
-#  HistoryUpd_SS — calls into the paper's Algorithm 1 correctly.
-#
-#  Key observation (Updated Lagrangian):
-#     ∂(Δu)/∂(ⁿx)  =  Λ − I       where  Λ = F_{n+1} · F_n⁻¹
-#
-#  So we build Λ directly from F_n and F_{n+1}, then:
-#
-#     Δ𝐄 = ½ ((Λ−I) + (Λ−I)ᵀ + (Λ−I)ᵀ (Λ−I))      (paper Eq. 28)
-#
-#  and pass Λ + det(Λ) into the radial return for the push-forward.
-# ═══════════════════════════════════════════════════════════════════════════
 from dolfinx import mesh, fem
 from dolfinx.io import XDMFFile
 from mpi4py import MPI
@@ -27,7 +15,7 @@ jax.config.update("jax_enable_x64", True)
 
 from LargeStrains.ElasticModulus import compute_elastic_tangent_jax
 from LargeStrains.TensorsStr     import strain_to_voigt, stress_to_voigt, voigt_to_stress
-from LargeStrains.RadialReturn_V0   import radial_return_jax, constitutive_update_with_tangent
+from LargeStrains.RadialReturn   import radial_return_jax, constitutive_update_with_tangent
 from LargeStrains.BMatrix        import compute_B_matrix
 from LargeStrains.Assembler      import ConsistentTangentAssembler
 from LargeStrains.GradU          import compute_grad_u_at_qp
@@ -54,7 +42,7 @@ def update_history_and_tangents(u, u_old, sigma_q, eps_p_q, Y_q, alpha_q, assemb
 
     for cell in range(num_cells):
         for qp in range(num_qp):
-            grad_u     = compute_grad_u_at_qp(u,     cell, qp, basis_grad, V)
+            grad_u     = compute_grad_u_at_qp(u, cell, qp, basis_grad, V)
             grad_u_old = compute_grad_u_at_qp(u_old, cell, qp, basis_grad, V)
             sigma_n_v  = stress_to_voigt(jnp.array(sigma_arr_old[cell, qp]))
             alpha_n_v  = jnp.array(alpha_arr_old[cell, qp])
@@ -74,25 +62,16 @@ def update_history_and_tangents(u, u_old, sigma_q, eps_p_q, Y_q, alpha_q, assemb
                 )
 
             elif strain == 'large1':
-                # ─── Paper's Algorithm 1 (Box 2a) ───────────────────────────
-                # 1) Build F_n  and  F_{n+1}  from the reference-config grad u
-                F_n   = jnp.array(I3 + grad_u_old)        # Ω_0 → Ω_n
-                F_np1 = jnp.array(I3 + grad_u)            # Ω_0 → Ω_{n+1}
-
-                # 2) Incremental def. gradient (paper's Λ): Ω_n → Ω_{n+1}
+                # ─── Paper's Algorithm 1 ───────────────────────────
+                F_n   = jnp.array(I3 + grad_u_old)       
+                F_np1 = jnp.array(I3 + grad_u)            
                 Lambda   = F_np1 @ jnp.linalg.inv(F_n)
                 J_Lambda = jnp.linalg.det(Lambda)
-
-                # 3) Spatial gradient of Δu w.r.t. Ω_n  (paper Eq. 27):
-                #        Λ = I + ∂Δu/∂(ⁿx)   ⇒   ∂Δu/∂(ⁿx) = Λ − I
                 grad_du_n = Lambda - jnp.eye(3)
-
-                # 4) Full Lagrange strain in Ω_n with quadratic term (Eq. 28)
                 delta_eps   = 0.5 * (grad_du_n + grad_du_n.T
                                      + grad_du_n.T @ grad_du_n)
                 delta_eps_v = strain_to_voigt(delta_eps)
 
-                # 5) Call return mapping with Λ for the push-forward (Eq. 19)
                 sigma_v, eps_p, Y, alpha_new_v, C_tan = constitutive_update_with_tangent(
                     delta_eps_v, sigma_n_v,
                     float(eps_p_arr_old[cell, qp]),
@@ -101,7 +80,7 @@ def update_history_and_tangents(u, u_old, sigma_q, eps_p_q, Y_q, alpha_q, assemb
                     alpha_n_v = alpha_n_v,
                     Lambda    = Lambda,
                     J_Lambda  = float(J_Lambda),
-                    F_n       = F_n,                   # kept for backwards compat
+                    F_n       = F_n,                  
                     J_n       = float(jnp.linalg.det(F_n)),
                     strain    = 'large1',
                     hardening = hardening

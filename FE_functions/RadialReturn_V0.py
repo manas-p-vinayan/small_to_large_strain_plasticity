@@ -1,30 +1,3 @@
-# ═══════════════════════════════════════════════════════════════════════════
-#  RadialReturn — faithful to Rodriguez-Ferran & Huerta (1996), Algorithm 1
-#
-#  Reference:
-#    Rodriguez-Ferran A. & Huerta A. (1996),
-#    "Comparing Two Algorithms to Add Large Strains to a Small Strain
-#     Finite Element Code", CIMNE Publication 91.
-#
-#  Algorithm 1 (paper's Box 2a) for `strain='large1'`:
-#
-#    Step 2:  Δε = ½ (∂Δu/∂ⁿx + ∂Δu/∂ⁿxᵀ + ∂Δu/∂ⁿxᵀ · ∂Δu/∂ⁿx)
-#                  ── full Lagrange strain in Ω_n, INCLUDING quadratic term
-#             [computed UPSTREAM in HistoryUpd_SS, passed in as delta_eps_v]
-#
-#    Step 3:  Δσ_trial = C : Δε                                 (in Ω_n)
-#
-#    Step 4:  σ_trial = J_Λ⁻¹ Λ σ_n Λᵀ + J_Λ⁻¹ Λ Δσ_trial Λᵀ    (Eq. 19)
-#                       └── push σ_n ──┘   └── push Δσ_trial ──┘
-#             where  Λ = F_{n+1} · F_n⁻¹     (incremental def. gradient,
-#                                              maps Ω_n → Ω_{n+1})
-#                    J_Λ = det(Λ)
-#
-#    Step 5:  Standard radial return on σ_trial
-#
-#  This is incrementally objective AND first-order accurate (paper Sec. 4).
-# ═══════════════════════════════════════════════════════════════════════════
-
 from dolfinx import mesh, fem
 from dolfinx.io import XDMFFile
 from mpi4py import MPI
@@ -40,7 +13,7 @@ from functools import partial
 import matplotlib.pyplot as plt
 jax.config.update("jax_enable_x64", True)
 
-from LargeStrains.TensorsStr import strain_to_voigt, stress_to_voigt, voigt_to_stress
+from FE_functions.TensorsStr import strain_to_voigt, stress_to_voigt, voigt_to_stress
 
 
 @partial(jax.jit, static_argnames=('strain', 'hardening'))

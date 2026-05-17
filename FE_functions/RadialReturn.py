@@ -1,26 +1,3 @@
-# ═══════════════════════════════════════════════════════════════════════════
-#  RadialReturn — faithful to Rodriguez-Ferran & Huerta (1996), Algorithm 1
-#                 + Simo-Hughes-correct radial return for ALL hardening laws
-#
-#  Reference:
-#    Rodriguez-Ferran A. & Huerta A. (1996),
-#    "Comparing Two Algorithms to Add Large Strains to a Small Strain
-#     Finite Element Code", CIMNE Publication 91.
-#    Simo J.C. & Hughes T.J.R. (1998), "Computational Inelasticity", Box 3.2
-#
-#  Algorithm 1 (paper's Box 2a) for `strain='large1'`:
-#    Step 4:  σ_trial = J_Λ⁻¹ Λ σ_n Λᵀ + J_Λ⁻¹ Λ Δσ_trial Λᵀ    (Eq. 19)
-#    where  Λ = F_{n+1} · F_n⁻¹    (incremental deformation gradient)
-#
-#  Radial return (Simo-Hughes Box 3.2 convention):
-#    Δγ is the consistency parameter, also equal to Δε_p_eq directly.
-#    s_new = s_trial · (1 − 3G·Δγ / σ_eq_trial)
-#    σ_eq_new = σ_eq_trial − 3G·Δγ
-#    Y_new    = Y_n + h·Δγ          (linear isotropic)
-#
-#  CONSISTENCY VERIFIED: σ_eq_new = Y_new exactly at the end of return mapping.
-# ═══════════════════════════════════════════════════════════════════════════
-
 from dolfinx import mesh, fem
 from dolfinx.io import XDMFFile
 from mpi4py import MPI
@@ -47,9 +24,7 @@ def radial_return_jax(delta_eps_v, sigma_n_v, eps_p_n, Y_n,
                       Lambda=None, J_Lambda=None,
                       strain='small',
                       hardening='linear_isotropic'):
-    """
-    delta_eps_v : 6-Voigt strain INCREMENT (engineering shears for off-diagonals)
-    """
+
     G   = E / (2.0 * (1.0 + nu))
     K   = E / (3.0 * (1.0 - 2.0 * nu))
     lam = K - 2.0/3.0 * G
@@ -57,8 +32,6 @@ def radial_return_jax(delta_eps_v, sigma_n_v, eps_p_n, Y_n,
     alpha_n_v = jnp.zeros(6) if alpha_n_v is None else alpha_n_v
 
     # ── Build elastic incremental stress in Ω_n: Δσ = C : Δε ───────────────
-    # Note shear rows use G (not 2G) because delta_eps_v[3:6] are engineering
-    # shears (= 2 · tensorial), and Voigt elastic matrix has G on shear diag.
     delta_sigma_v = jnp.zeros(6)
     delta_sigma_v = delta_sigma_v.at[0].set((lam + 2*G)*delta_eps_v[0]
                                             + lam*(delta_eps_v[1] + delta_eps_v[2]))
@@ -91,20 +64,16 @@ def radial_return_jax(delta_eps_v, sigma_n_v, eps_p_n, Y_n,
         2*(eta_v[3]**2 + eta_v[4]**2 + eta_v[5]**2)
     ))
     f_trial = seq_trial - Y_n
+    #print("f_trial =", f_trial)
 
     def elastic_return(_):
         return sigma_trial_v, eps_p_n, Y_n, alpha_n_v
 
     def plastic_return(_):
 
-        # ─── Linear isotropic hardening (Simo-Hughes Box 3.2) ──────────────
+        # ─── Linear isotropic hardening ──────────────
         if hardening == 'linear_isotropic':
-            # In Simo-Hughes convention, Δγ IS the equivalent plastic strain
-            # increment (no √(2/3) factor). Consistency: σ_eq_new = Y_new.
             dgamma      = f_trial / (3.0*G + h)
-            # Radial return: scale s by (1 − 3G·Δγ/σ_eq_trial). Equivalent to
-            # subtracting 2G·Δγ·n where n = (3/2)·s/σ_eq_trial in Simo's
-            # normalisation.
             factor      = 1.0 - 3.0*G*dgamma / seq_trial
             s_new_v     = s_trial_v * factor
             sigma_new_v = s_new_v.at[0].add(p_trial).at[1].add(p_trial).at[2].add(p_trial)
@@ -139,9 +108,6 @@ def radial_return_jax(delta_eps_v, sigma_n_v, eps_p_n, Y_n,
         # ─── Kinematic hardening (Armstrong-Frederick) ─────────────────────
         elif hardening == 'kinematic':
             C_af, gamma_af = h, delta
-            # In Simo convention, A-F consistency is:
-            #   σ_eq_trial − 3G·Δγ − C·Δγ/(1+γ·Δγ) − Y_init = 0
-            # (note: NOT 2/3·C; the geometric factor cancels with Simo's n)
             def newton_step_kin(_, dgamma):
                 denom = 1.0 + gamma_af * dgamma
                 f     = seq_trial - 3.0*G*dgamma - C_af*dgamma/denom - Y_init
@@ -152,14 +118,12 @@ def radial_return_jax(delta_eps_v, sigma_n_v, eps_p_n, Y_n,
             dgamma      = jax.lax.fori_loop(0, 50, newton_step_kin, dgamma_init)
 
             denom       = 1.0 + gamma_af * dgamma
-            # Simo's flow direction: n = (3/2) · η / σ_eq_trial
             n_v         = (1.5 / seq_trial) * eta_v
             s_new_v     = s_trial_v - 2.0*G*dgamma*n_v
             sigma_new_v = s_new_v.at[0].add(p_trial).at[1].add(p_trial).at[2].add(p_trial)
-            # Backstress evolution (A-F): α_new = (α_n + (2/3)·C·Δγ·n) / (1+γ·Δγ)
             alpha_new_v = (alpha_n_v + (2.0/3.0)*C_af*dgamma*n_v) / denom
             eps_p_new   = eps_p_n + dgamma
-            Y_new       = Y_n     # no isotropic component in pure A-F
+            Y_new       = Y_n  
             return sigma_new_v, eps_p_new, Y_new, alpha_new_v
 
     return jax.lax.cond(f_trial <= 0.0, elastic_return, plastic_return, operand=None)
