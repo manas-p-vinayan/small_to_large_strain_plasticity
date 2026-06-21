@@ -14,7 +14,10 @@ def Newton_Solver_Generic(
         extra_tractions=None,
         prescribed_values=None,         
         strain='small', hardening='linear_isotropic',
-        tol=1e-8):
+        tol=1e-8,
+        solver='classical',      # 'classical' | 'nn' | 'lstm'
+        nn_update_fn=None,       # from make_nn_constitutive_update() or make_lstm_constitutive_update()
+        lstm_states=None):       # dict from make_lstm_states() — only needed for solver='lstm'
     """
     Returns the converged Function `u`.
     Boundary conditions are applied by row/col elimination per component.
@@ -71,7 +74,8 @@ def Newton_Solver_Generic(
             u, u_old, sigma_q, eps_p_q, Y_q, alpha_q, assembler,
             num_cells, num_qp, basis_grad, V, E, nu, Y0, h,
             Y_init, Y_inf, delta,
-            update_u_old=False, strain=strain, hardening=hardening
+            update_u_old=False, strain=strain, hardening=hardening,
+            solver=solver, nn_update_fn=nn_update_fn, lstm_states=lstm_states
         )
 
         K = assembler.assemble_stiffness()
@@ -122,7 +126,8 @@ def Newton_Solver_Generic(
         u, u_old, sigma_q, eps_p_q, Y_q, alpha_q, assembler,
         num_cells, num_qp, basis_grad, V, E, nu, Y0, h,
         Y_init, Y_inf, delta,
-        update_u_old=True, strain=strain, hardening=hardening
+        update_u_old=True, strain=strain, hardening=hardening,
+        solver=solver, nn_update_fn=nn_update_fn, lstm_states=lstm_states
     )
 
     # ── ELASTIC / PLASTIC status report ─────────────────────────────────────
